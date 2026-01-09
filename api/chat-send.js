@@ -5,20 +5,30 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" })
   }
 
-  // Create Redis INSIDE the handler
   const redis = Redis.fromEnv()
 
-  try {
-    await redis.set("healthcheck", "ok")
-    const value = await redis.get("healthcheck")
+  const { user, message } = req.body || {}
 
-    return res.status(200).json({
-      ok: true,
-      redis: value,
+  if (
+    !message ||
+    typeof message !== "string" ||
+    message.trim().length === 0 ||
+    message.length > 200
+  ) {
+    return res.status(400).json({ error: "Invalid message" })
+  }
+
+  try {
+    await redis.publish("global-chat", {
+      user: user || "Guest",
+      message: message.trim(),
+      time: Date.now(),
     })
+
+    return res.json({ ok: true })
   } catch (err) {
     return res.status(500).json({
-      error: "Redis failed",
+      error: "Publish failed",
       message: err.message,
     })
   }
