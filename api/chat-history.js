@@ -4,8 +4,9 @@ const redis = Redis.fromEnv()
 const KEY = "global-chat-history"
 
 export default async function handler(req, res) {
-  // 🚫 absolutely no caching
-  res.setHeader("Cache-Control", "no-store")
+  res.setHeader("Cache-Control", "no-store, max-age=0")
+  res.setHeader("Pragma", "no-cache")
+  res.setHeader("Expires", "0")
 
   if (req.method !== "GET") {
     return res.status(405).json({ error: "Method not allowed" })
@@ -20,10 +21,10 @@ export default async function handler(req, res) {
           const x = JSON.parse(m)
           return {
             id: x.id,
-            user: x.user,
-            avatar: x.avatar,
-            message: x.message,
-            time: x.time,
+            user: x.user || "Unknown",
+            avatar: x.avatar || "",
+            message: typeof x.message === "string" ? x.message : "",
+            time: typeof x.time === "number" ? x.time : Date.now(),
             edited: !!x.edited,
           }
         } catch {
