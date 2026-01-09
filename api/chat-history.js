@@ -1,8 +1,7 @@
 import { Redis } from "@upstash/redis"
 
 const redis = Redis.fromEnv()
-const HISTORY_KEY = "global-chat-history"
-const MAX_MESSAGES = 50
+const KEY = "global-chat-history"
 
 export default async function handler(req, res) {
   if (req.method !== "GET") {
@@ -10,21 +9,23 @@ export default async function handler(req, res) {
   }
 
   try {
-    const raw = await redis.lrange(HISTORY_KEY, 0, MAX_MESSAGES - 1)
+    const raw = await redis.lrange(KEY, 0, -1)
 
     const messages = raw
       .map((m) => {
         try {
-          const msg = JSON.parse(m)
-
-          // 🔒 sanitize
+          const x = JSON.parse(m)
           return {
-            id: msg.id || crypto.randomUUID(),
-            user: msg.user || "Unknown",
-            avatar: msg.avatar || "",
-            message: typeof msg.message === "string" ? msg.message : "",
-            time: typeof msg.time === "number" ? msg.time : Date.now(),
-            edited: !!msg.edited,
+            id: x.id || crypto.randomUUID(),
+            user: typeof x.user === "string" ? x.user : "Unknown",
+            avatar:
+              typeof x.avatar === "string" && x.avatar.length > 5
+                ? x.avatar
+                : "",
+            message:
+              typeof x.message === "string" ? x.message : "",
+            time: typeof x.time === "number" ? x.time : Date.now(),
+            edited: !!x.edited,
           }
         } catch {
           return null
@@ -34,7 +35,7 @@ export default async function handler(req, res) {
       .reverse()
 
     return res.json({ messages })
-  } catch (err) {
-    return res.status(500).json({ error: err.message })
+  } catch (e) {
+    return res.status(500).json({ error: e.message })
   }
 }
