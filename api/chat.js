@@ -12,6 +12,12 @@ const redis = new Redis({
 const CHAT_KEY = "global_chat"
 
 export default async function handler(req, res) {
+  // 🔴 Disable ALL caching
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate")
+  res.setHeader("Pragma", "no-cache")
+  res.setHeader("Expires", "0")
+  res.setHeader("Surrogate-Control", "no-store")
+
   if (req.method === "POST") {
     const { user, text } = req.body || {}
 
@@ -26,7 +32,6 @@ export default async function handler(req, res) {
     }
 
     await redis.rpush(CHAT_KEY, message)
-
     return res.status(200).json({ ok: true })
   }
 
