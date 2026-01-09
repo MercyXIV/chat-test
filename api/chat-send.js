@@ -5,25 +5,28 @@ export default async function handler(req, res) {
 
   const redis = Redis.fromEnv()
 
-  try {
-    // Log proves function is hit
-    console.log("CHAT-SEND HIT")
+  // LOG EXACTLY WHAT ARRIVES
+  console.log("REQ BODY RAW:", req.body)
 
-    await redis.lpush(
-      "global-chat-history",
-      JSON.stringify({
-        id: Date.now().toString(),
-        user: req.body?.user || "Anonymous",
-        message: req.body?.message || "",
-        time: Date.now(),
-      })
-    )
+  const body = req.body || {}
 
-    console.log("LPUSH DONE")
+  const message =
+    body.message !== undefined
+      ? String(body.message)
+      : "<<<UNDEFINED>>>"
 
-    return res.json({ ok: true })
-  } catch (e) {
-    console.error("CHAT-SEND ERROR", e)
-    return res.status(500).json({ error: e.message })
-  }
+  await redis.lpush(
+    "global-chat-history",
+    JSON.stringify({
+      user: body.user || "Guest",
+      message: message,
+      time: Date.now(),
+    })
+  )
+
+  return res.json({
+    ok: true,
+    savedMessage: message,
+  })
 }
+
