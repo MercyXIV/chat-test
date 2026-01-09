@@ -1,0 +1,7 @@
+{
+  "name": "chat-api",
+  "private": true,
+  "dependencies": {
+    "@upstash/redis": "^1.31.0"
+  }
+}
