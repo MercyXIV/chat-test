@@ -12,14 +12,13 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" })
   }
 
-  const { id, user, avatar, message, time, isAdmin } = req.body || {}
+  const { id, user, avatar, message, isAdmin } = req.body || {}
 
-  if (!id || !user || !message) {
+  if (!id || !user || typeof message !== "string") {
     return res.status(400).json({ error: "Invalid payload" })
   }
 
   try {
-    // Slowmode (admins bypass)
     if (!isAdmin) {
       const last = await redis.get(`${LAST_SEND_KEY}:${user}`)
       if (last && Date.now() - Number(last) < SLOWMODE_MS) {
@@ -33,10 +32,10 @@ export default async function handler(req, res) {
     const payload = {
       id,
       user,
-      avatar,
+      avatar: avatar || "",
       message: message.trim(),
-      time: time || Date.now(),
-      edited: false,
+      time: Date.now(),          // ✅ ALWAYS SET
+      edited: false,             // ✅ ALWAYS SET
     }
 
     await redis.lpush(HISTORY_KEY, JSON.stringify(payload))
