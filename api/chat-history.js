@@ -11,7 +11,28 @@ export default async function handler(req, res) {
 
   try {
     const raw = await redis.lrange(HISTORY_KEY, 0, MAX_MESSAGES - 1)
-    const messages = raw.map((m) => JSON.parse(m)).reverse()
+
+    const messages = raw
+      .map((m) => {
+        try {
+          const msg = JSON.parse(m)
+
+          // 🔒 sanitize
+          return {
+            id: msg.id || crypto.randomUUID(),
+            user: msg.user || "Unknown",
+            avatar: msg.avatar || "",
+            message: typeof msg.message === "string" ? msg.message : "",
+            time: typeof msg.time === "number" ? msg.time : Date.now(),
+            edited: !!msg.edited,
+          }
+        } catch {
+          return null
+        }
+      })
+      .filter(Boolean)
+      .reverse()
+
     return res.json({ messages })
   } catch (err) {
     return res.status(500).json({ error: err.message })
