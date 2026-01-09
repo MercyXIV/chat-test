@@ -11,20 +11,17 @@ export default async function handler(req, res) {
   if (req.method === "POST") {
     const { user, text } = req.body
 
-    if (
-      !user ||
-      !text ||
-      typeof user !== "string" ||
-      typeof text !== "string"
-    ) {
+    if (!user || !text) {
       return res.status(400).json({ error: "Invalid payload" })
     }
 
-    await redis.rpush(CHAT_KEY, {
+    const message = {
       user,
       text,
       time: Date.now(),
-    })
+    }
+
+    await redis.rpush(CHAT_KEY, message)
 
     return res.status(200).json({ ok: true })
   }
@@ -34,5 +31,5 @@ export default async function handler(req, res) {
     return res.status(200).json({ messages })
   }
 
-  return res.status(405).end()
+  res.status(405).end()
 }
