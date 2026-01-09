@@ -1,7 +1,7 @@
 import { Redis } from "@upstash/redis"
 
 const redis = Redis.fromEnv()
-const HISTORY_KEY = "global-chat-history"
+const KEY = "global-chat-history"
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -9,14 +9,11 @@ export default async function handler(req, res) {
   }
 
   const { id } = req.body || {}
-
-  if (!id) {
-    return res.status(400).json({ error: "Missing message id" })
-  }
+  if (!id) return res.status(400).json({ error: "Missing id" })
 
   try {
-    const all = await redis.lrange(HISTORY_KEY, 0, -1)
-    const filtered = all.filter((m) => {
+    const all = await redis.lrange(KEY, 0, -1)
+    const keep = all.filter((m) => {
       try {
         return JSON.parse(m).id !== id
       } catch {
@@ -24,13 +21,11 @@ export default async function handler(req, res) {
       }
     })
 
-    await redis.del(HISTORY_KEY)
-    if (filtered.length) {
-      await redis.rpush(HISTORY_KEY, ...filtered)
-    }
+    await redis.del(KEY)
+    if (keep.length) await redis.rpush(KEY, ...keep)
 
     return res.json({ ok: true })
-  } catch (err) {
-    return res.status(500).json({ error: err.message })
+  } catch (e) {
+    return res.status(500).json({ error: e.message })
   }
 }
