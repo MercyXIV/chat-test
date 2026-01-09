@@ -4,6 +4,8 @@ const redis = Redis.fromEnv()
 const KEY = "global-chat-history"
 
 export default async function handler(req, res) {
+  res.setHeader("Cache-Control", "no-store")
+
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" })
   }
