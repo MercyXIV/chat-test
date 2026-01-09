@@ -1,39 +1,19 @@
 import { Redis } from "@upstash/redis"
 
 const redis = Redis.fromEnv()
-const KEY = "global-chat-history"
 
 export default async function handler(req, res) {
-  // 🚫 absolutely no caching
-  res.setHeader("Cache-Control", "no-store")
-
-  if (req.method !== "GET") {
-    return res.status(405).json({ error: "Method not allowed" })
-  }
-
   try {
-    const raw = await redis.lrange(KEY, 0, -1)
-
-    const messages = raw
-      .map((m) => {
-        try {
-          const x = JSON.parse(m)
-          return {
-            id: x.id,
-            user: x.user,
-            avatar: x.avatar,
-            message: x.message,
-            time: x.time,
-            edited: !!x.edited,
-          }
-        } catch {
-          return null
-        }
+    await redis.lpush(
+      "global-chat-history",
+      JSON.stringify({
+        id: "test",
+        user: "Debug",
+        message: "Hello from debug",
+        time: Date.now(),
       })
-      .filter(Boolean)
-      .reverse()
-
-    return res.json({ messages })
+    )
+    return res.json({ ok: true })
   } catch (e) {
     return res.status(500).json({ error: e.message })
   }
