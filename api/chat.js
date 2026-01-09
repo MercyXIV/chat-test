@@ -1,5 +1,9 @@
 import { Redis } from "@upstash/redis"
 
+export const config = {
+  runtime: "nodejs",
+}
+
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL,
   token: process.env.UPSTASH_REDIS_REST_TOKEN,
@@ -9,7 +13,7 @@ const CHAT_KEY = "global_chat"
 
 export default async function handler(req, res) {
   if (req.method === "POST") {
-    const { user, text } = req.body
+    const { user, text } = req.body || {}
 
     if (!user || !text) {
       return res.status(400).json({ error: "Invalid payload" })
@@ -31,5 +35,5 @@ export default async function handler(req, res) {
     return res.status(200).json({ messages })
   }
 
-  res.status(405).end()
+  return res.status(405).end()
 }
