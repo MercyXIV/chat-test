@@ -13,7 +13,10 @@ export default async function handler(req, res) {
         time: Date.now(),
       })
     )
-    return res.json({ ok: true })
+    return res.json({
+    redisUrl: process.env.UPSTASH_REDIS_REST_URL || "MISSING",
+    hasToken: !!process.env.UPSTASH_REDIS_REST_TOKEN,
+    })
   } catch (e) {
     return res.status(500).json({ error: e.message })
   }
