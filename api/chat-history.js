@@ -7,22 +7,19 @@ export default async function handler(req, res) {
 
   const redis = Redis.fromEnv()
 
-  try {
-    const raw = await redis.lrange("global-chat-history", 0, -1)
+  const raw = await redis.lrange("global-chat-history", 0, -1)
 
-    const messages = raw
-      .map((m) => {
-        try {
-          return JSON.parse(m)
-        } catch {
-          return null
-        }
-      })
-      .filter(Boolean)
-      .reverse()
+  const messages = raw
+    .map((m) => {
+      try {
+        return JSON.parse(m)
+      } catch {
+        return null
+      }
+    })
+    .filter(Boolean)
+    .reverse()
 
-    return res.json({ messages })
-  } catch (e) {
-    return res.status(500).json({ error: e.message })
-  }
+  return res.json({ messages })
 }
+
