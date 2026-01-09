@@ -1,35 +1,29 @@
 import { Redis } from "@upstash/redis"
 
-const redis = Redis.fromEnv()
-const KEY = "global-chat-history"
-
 export default async function handler(req, res) {
   res.setHeader("Cache-Control", "no-store")
 
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" })
-  }
-
-  const { id, user, avatar, message, time } = req.body || {}
-
-  if (!id || !user || typeof message !== "string") {
-    return res.status(400).json({ error: "Bad payload" })
-  }
-
-  const payload = {
-    id,
-    user,
-    avatar: avatar || "",
-    message: message.trim(),
-    time: typeof time === "number" ? time : Date.now(),
-    edited: false,
-  }
+  const redis = Redis.fromEnv()
 
   try {
-    await redis.lpush(KEY, JSON.stringify(payload))
-    await redis.ltrim(KEY, 0, 99)
+    // Log proves function is hit
+    console.log("CHAT-SEND HIT")
+
+    await redis.lpush(
+      "global-chat-history",
+      JSON.stringify({
+        id: Date.now().toString(),
+        user: req.body?.user || "Anonymous",
+        message: req.body?.message || "",
+        time: Date.now(),
+      })
+    )
+
+    console.log("LPUSH DONE")
+
     return res.json({ ok: true })
   } catch (e) {
+    console.error("CHAT-SEND ERROR", e)
     return res.status(500).json({ error: e.message })
   }
 }
