@@ -9,7 +9,18 @@ const redis = new Redis({
 /* ---------------- CORS + no-cache ---------------- */
 function cors(req, res) {
   const origin = req.headers.origin || ""
-  res.setHeader("Access-Control-Allow-Origin", origin || "*")
+  const allowed =
+    origin === "https://chstestred.framer.website" ||
+    origin.endsWith(".framer.website") ||
+    origin.endsWith(".framer.app")
+
+  if (allowed && origin) {
+    res.setHeader("Access-Control-Allow-Origin", origin)
+    res.setHeader("Vary", "Origin")
+  } else {
+    res.setHeader("Access-Control-Allow-Origin", "*")
+  }
+
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
   res.setHeader("Access-Control-Allow-Headers", "Content-Type")
 }
@@ -47,7 +58,7 @@ const rand = (n = 8) =>
 
 const msgIdGen = () => `msg_${Date.now()}_${rand()}`
 
-/* ---------------- Keys ---------------- */
+/* ---------------- Redis Keys ---------------- */
 const FEED_KEY = "standalone_chat_feed_v1"
 const MSG_KEY = (id) => `standalone_chat_msg:${id}`
 const COOLDOWN_KEY = (name) => `standalone_chat_cd:${name}`
@@ -146,4 +157,4 @@ export default async function handler(req, res) {
     console.error("standalone chat error:", err)
     return res.status(500).json({ success: false, error: "Server error" })
   }
-        }
+}
