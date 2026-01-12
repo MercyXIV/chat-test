@@ -1,42 +1,32 @@
 import { Redis } from "@upstash/redis"
 
-/* REDIS */
+/* ================= REDIS ================= */
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL,
   token: process.env.UPSTASH_REDIS_REST_TOKEN,
 })
 
-/* CONFIG */
+/* ================= CONFIG ================= */
 const ADMIN_PASSWORD = process.env.CHAT_ADMIN_PASSWORD || ""
-
 const FEED_KEY = "chat_feed_inline_v1"
 const TIMEOUT_KEY = name => `chat_timeout:${name}`
-
 const SERVER_MAX_MESSAGES = 150
 
-/* SSE (single long-lived GET per client)*/
-const sseClients = new Set()
-
+/* ================= SSE ================= */
+const clients = new Set()
 function sendSSE(payload) {
-  const data = `data: ${JSON.stringify(payload)}\n\n`
-  for (const res of sseClients) {
-    try {
-      res.write(data)
-    } catch {
-      sseClients.delete(res)
-    }
+  const msg = `data: ${JSON.stringify(payload)}\n\n`
+  for (const res of clients) {
+    try { res.write(msg) } catch { clients.delete(res) }
   }
 }
 
-/* HELPERS*/
+/* ================= HELPERS ================= */
 const now = () => Date.now()
-const idGen = () =>
-  `msg_${now()}_${Math.random().toString(36).slice(2, 8)}`
+const idGen = () => `msg_${now()}_${Math.random().toString(36).slice(2, 8)}`
 const norm = s => String(s || "").trim().slice(0, 400)
-const isAdmin = body =>
-  ADMIN_PASSWORD && body?.adminPassword === ADMIN_PASSWORD
+const isAdmin = b => ADMIN_PASSWORD && b?.adminPassword === ADMIN_PASSWORD
 
-/* HEADERS*/
 function headers(res) {
   res.setHeader("Access-Control-Allow-Origin", "*")
   res.setHeader("Access-Control-Allow-Headers", "Content-Type")
@@ -44,7 +34,7 @@ function headers(res) {
   res.setHeader("Cache-Control", "no-store")
 }
 
-/* HANDLER*/
+/* ================= HANDLER ================= */
 export default async function handler(req, res) {
   headers(res)
   if (req.method === "OPTIONS") return res.end()
@@ -52,56 +42,34 @@ export default async function handler(req, res) {
   const body = req.method === "POST" ? req.body || {} : req.query || {}
   const action = body.action
 
-  /* SSE — ONE GET REQUEST, MANY MESSAGES */
+  /* ---------- SSE (single global GET) ---------- */
   if (action === "events") {
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
     })
-
-    // browser auto-reconnect delay
     res.write("retry: 3000\n\n")
-
-    sseClients.add(res)
-
-    req.on("close", () => {
-      sseClients.delete(res)
-    })
-
+    clients.add(res)
+    req.on("close", () => clients.delete(res))
     return
   }
 
   try {
-    /* LIST — ONE REDIS COMMAND ON REFRESH*/
+    /* ---------- LIST (ONE Redis command) ---------- */
     if (action === "list") {
       const raw = await redis.lrange(FEED_KEY, 0, 99)
-
-      const messages = raw
-        .map(v => {
-          try {
-            return JSON.parse(v)
-          } catch {
-            return null
-          }
-        })
-        .filter(Boolean)
-
+      const messages = raw.map(v => JSON.parse(v))
       return res.json({ success: true, messages })
     }
 
-    /*CREATE MESSAGE*/
+    /* ---------- CREATE ---------- */
     if (action === "create") {
       const name = norm(body.name).slice(0, 20)
       const text = norm(body.text)
-
-      if (!name || !text) {
-        return res.status(400).json({ success: false })
-      }
-
-      if (await redis.get(TIMEOUT_KEY(name))) {
+      if (!name || !text) return res.status(400).json({ success: false })
+      if (await redis.get(TIMEOUT_KEY(name)))
         return res.status(403).json({ success: false })
-      }
 
       const msg = {
         id: idGen(),
@@ -112,6 +80,7 @@ export default async function handler(req, res) {
         editedAt: null,
         reactions: {},
         deleted: false,
+        isAdmin: isAdmin(body),
       }
 
       await redis.pipeline()
@@ -119,52 +88,40 @@ export default async function handler(req, res) {
         .ltrim(FEED_KEY, 0, SERVER_MAX_MESSAGES - 1)
         .exec()
 
-      // 🔥 one SSE event, zero Redis reads
       sendSSE({ type: "message", message: msg })
-
       return res.json({ success: true })
     }
 
-    /*EDIT MESSAGE (rewrite feed once)*/
+    /* ---------- EDIT ---------- */
     if (action === "edit") {
       const raw = await redis.lrange(FEED_KEY, 0, SERVER_MAX_MESSAGES - 1)
+      let updated = null
 
-      let updatedMsg = null
-      const updated = raw.map(v => {
+      const out = raw.map(v => {
         const m = JSON.parse(v)
         if (m.id === body.id && m.name === body.name) {
           m.text = norm(body.text)
           m.editedAt = now()
-          updatedMsg = m
+          updated = m
         }
         return JSON.stringify(m)
       })
 
-      if (!updatedMsg) {
-        return res.status(403).json({ success: false })
-      }
+      if (!updated) return res.status(403).json({ success: false })
 
-      await redis.pipeline()
-        .del(FEED_KEY)
-        .lpush(FEED_KEY, ...updated)
-        .exec()
-
-      sendSSE({ type: "edit", message: updatedMsg })
-
+      await redis.pipeline().del(FEED_KEY).lpush(FEED_KEY, ...out).exec()
+      sendSSE({ type: "edit", message: updated })
       return res.json({ success: true })
     }
 
-    /* DELETE MESSAGE (owner or admin)*/
+    /* ---------- DELETE ---------- */
     if (action === "delete") {
       const raw = await redis.lrange(FEED_KEY, 0, SERVER_MAX_MESSAGES - 1)
-
       let deletedId = null
-      const updated = raw.map(v => {
+
+      const out = raw.map(v => {
         const m = JSON.parse(v)
-        if (
-          m.id === body.id &&
-          (m.name === body.name || isAdmin(body))
-        ) {
+        if (m.id === body.id && (m.name === body.name || isAdmin(body))) {
           m.text = "[message deleted]"
           m.deleted = true
           deletedId = m.id
@@ -172,79 +129,51 @@ export default async function handler(req, res) {
         return JSON.stringify(m)
       })
 
-      if (!deletedId) {
-        return res.status(403).json({ success: false })
-      }
+      if (!deletedId) return res.status(403).json({ success: false })
 
-      await redis.pipeline()
-        .del(FEED_KEY)
-        .lpush(FEED_KEY, ...updated)
-        .exec()
-
+      await redis.pipeline().del(FEED_KEY).lpush(FEED_KEY, ...out).exec()
       sendSSE({ type: "delete", id: deletedId })
-
       return res.json({ success: true })
     }
 
-    /* EMOJI REACTION (persisted, toggled)*/
+    /* ---------- REACT ---------- */
     if (action === "react") {
       const raw = await redis.lrange(FEED_KEY, 0, SERVER_MAX_MESSAGES - 1)
+      let reactions = null
 
-      let updatedReactions = null
-      const updated = raw.map(v => {
+      const out = raw.map(v => {
         const m = JSON.parse(v)
         if (m.id === body.id) {
           m.reactions ||= {}
           m.reactions[body.emoji] ||= []
-
-          const users = m.reactions[body.emoji]
-          m.reactions[body.emoji] = users.includes(body.name)
-            ? users.filter(u => u !== body.name)
-            : [...users, body.name]
-
-          if (m.reactions[body.emoji].length === 0) {
+          const u = m.reactions[body.emoji]
+          m.reactions[body.emoji] = u.includes(body.name)
+            ? u.filter(x => x !== body.name)
+            : [...u, body.name]
+          if (m.reactions[body.emoji].length === 0)
             delete m.reactions[body.emoji]
-          }
-
-          updatedReactions = m.reactions
+          reactions = m.reactions
         }
         return JSON.stringify(m)
       })
 
-      if (!updatedReactions) {
-        return res.status(404).json({ success: false })
-      }
+      if (!reactions) return res.status(404).json({ success: false })
 
-      await redis.pipeline()
-        .del(FEED_KEY)
-        .lpush(FEED_KEY, ...updated)
-        .exec()
-
-      sendSSE({
-        type: "react",
-        id: body.id,
-        reactions: updatedReactions,
-      })
-
+      await redis.pipeline().del(FEED_KEY).lpush(FEED_KEY, ...out).exec()
+      sendSSE({ type: "react", id: body.id, reactions })
       return res.json({ success: true })
     }
 
-    /*ADMIN TIMEOUT */
+    /* ---------- ADMIN TIMEOUT ---------- */
     if (action === "admin_timeout") {
-      if (!isAdmin(body)) {
-        return res.status(403).json({ success: false })
-      }
-
-      await redis.set(TIMEOUT_KEY(body.target), "1", {
-        ex: body.minutes * 60,
-      })
-
+      if (!isAdmin(body)) return res.status(403).json({ success: false })
+      await redis.set(TIMEOUT_KEY(body.target), "1", { ex: body.minutes * 60 })
       return res.json({ success: true })
     }
 
     return res.status(400).json({ success: false })
-  } catch (err) {
-    console.error("CHAT BACKEND ERROR:", err)
+  } catch (e) {
+    console.error(e)
     return res.status(500).json({ success: false })
   }
-      }
+        }
