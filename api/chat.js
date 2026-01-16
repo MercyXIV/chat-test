@@ -10,7 +10,7 @@ const redis = new Redis({
 function cors(req, res) {
   const origin = req.headers.origin || ""
   const allowed =
-    origin === "https://chstestred.framer.website" ||
+    origin === "https://chatestred.framer.website" ||
     origin.endsWith(".framer.website") ||
     origin.endsWith(".framer.app")
 
