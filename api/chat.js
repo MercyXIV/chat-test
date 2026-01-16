@@ -1,3 +1,4 @@
+// api/chat.js — standalone global chat (trades-style feed)
 import { Redis } from "@upstash/redis"
 
 const redis = new Redis({
@@ -5,116 +6,155 @@ const redis = new Redis({
   token: process.env.UPSTASH_REDIS_REST_TOKEN,
 })
 
-/* ================= CONFIG ================= */
+/* ---------------- CORS + no-cache ---------------- */
+function cors(req, res) {
+  const origin = req.headers.origin || ""
+  const allowed =
+    origin === "https://chstestred.framer.website" ||
+    origin.endsWith(".framer.website") ||
+    origin.endsWith(".framer.app")
 
-const CHAT_LIST_KEY = "chat:global"
-const CHAT_MSG_KEY = (id) => `chat:msg:${id}`
-
-const MAX_MESSAGES = 100
-const MESSAGE_TTL = 60 * 60 * 6
-
-/* ================= HELPERS ================= */
-
-function normalize(v) {
-  return String(v || "").trim()
-}
-
-function makeId() {
-  return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
-}
-
-function makeGuest() {
-  return `guest-${Math.random().toString(36).slice(2, 6)}`
-}
-
-/* ================= HANDLER ================= */
-
-export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "*")
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type")
-  res.setHeader("Cache-Control", "no-store")
-
-  if (req.method === "OPTIONS") {
-    return res.status(200).end()
+  if (allowed && origin) {
+    res.setHeader("Access-Control-Allow-Origin", origin)
+    res.setHeader("Vary", "Origin")
+  } else {
+    res.setHeader("Access-Control-Allow-Origin", "*")
   }
 
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type")
+}
+
+function noCache(res) {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+}
+
+/* ---------------- Helpers (same pattern as trades.js) ---------------- */
+const unwrap = (v) => {
+  let x = v
+  for (let i = 0; i < 8; i++) {
+    if (x == null) return null
+    if (Array.isArray(x)) { x = x[0]; continue }
+    if (typeof x === "object" && x && "result" in x) { x = x.result; continue }
+    break
+  }
+  return x
+}
+
+function safeParse(v) {
+  const x = unwrap(v)
+  if (!x) return null
+  if (typeof x === "object") return x
+  try { return JSON.parse(x) } catch { return null }
+}
+
+const clamp = (n, a, b) => Math.max(a, Math.min(b, n))
+
+const normName = (s) => String(s || "").trim().slice(0, 20)
+const normText = (s) => String(s || "").trim().slice(0, 400)
+
+const rand = (n = 8) =>
+  [...Array(n)].map(() => Math.random().toString(36)[2]).join("")
+
+const msgIdGen = () => `msg_${Date.now()}_${rand()}`
+
+/* ---------------- Redis Keys ---------------- */
+const FEED_KEY = "standalone_chat_feed_v1"
+const MSG_KEY = (id) => `standalone_chat_msg:${id}`
+const COOLDOWN_KEY = (name) => `standalone_chat_cd:${name}`
+
+/* ---------------- Config ---------------- */
+const DEFAULT_LIMIT = 120
+const MESSAGE_TTL = 60 * 60 * 6 // 6 hours
+const COOLDOWN_SEC = 2
+
+/* =========================================================
+   HANDLER
+========================================================= */
+export default async function handler(req, res) {
+  cors(req, res)
+  noCache(res)
+  if (req.method === "OPTIONS") return res.status(200).end()
+
   try {
-    const body = req.method === "POST" ? req.body || {} : req.query || {}
-    const action = normalize(body.action)
+    const body = req.method === "POST" ? (req.body || {}) : (req.query || {})
+    const action = String(body.action || "")
+    if (!action) {
+      return res.status(400).json({ success: false, error: "Missing action" })
+    }
 
-    /* ========== LIST (LRANGE) ========== */
+    /* ---------------- LIST ---------------- */
     if (action === "list") {
-      const ids = await redis.lrange(CHAT_LIST_KEY, 0, MAX_MESSAGES - 1)
+      const limit = clamp(Number(body.limit || DEFAULT_LIMIT), 1, 300)
+      const ids = (await redis.lrange(FEED_KEY, 0, limit - 1)) || []
 
-      if (!ids || ids.length === 0) {
-        return res.json({ success: true, messages: [] })
+      if (!ids.length) {
+        return res.status(200).json({ success: true, messages: [] })
       }
 
       const pipe = redis.pipeline()
-      ids.forEach((id) => pipe.get(CHAT_MSG_KEY(id)))
+      for (const id of ids) pipe.get(MSG_KEY(id))
       const raw = await pipe.exec()
 
-      const messages = raw
-        .map((r) => {
-          try {
-            return JSON.parse(r)
-          } catch {
-            return null
-          }
-        })
-        .filter(Boolean)
+      const messages = []
+      const missing = []
 
-      return res.json({ success: true, messages })
+      for (let i = 0; i < ids.length; i++) {
+        const obj = safeParse(raw[i])
+        if (!obj || !obj.id) {
+          missing.push(ids[i])
+          continue
+        }
+        messages.push(obj)
+      }
+
+      if (missing.length) {
+        const p2 = redis.pipeline()
+        for (const id of missing) p2.lrem(FEED_KEY, 0, id)
+        await p2.exec()
+      }
+
+      return res.status(200).json({ success: true, messages })
     }
 
-    /* ========== SEND (LPUSH) ========== */
-    if (action === "send") {
-      let username = normalize(body.username).toLowerCase()
-      const text = normalize(body.text)
+    /* ---------------- CREATE ---------------- */
+    if (action === "create") {
+      const name = normName(body.name)
+      const text = normText(body.text)
 
-      // 🔹 ONLY CHANGE: auto guest username
-      if (!username) {
-        username = makeGuest()
+      if (!name) {
+        return res.status(400).json({ success: false, error: "Missing name" })
+      }
+      if (!text) {
+        return res.status(400).json({ success: false, error: "Empty message" })
       }
 
-      if (!text || text.length > 300) {
-        return res
-          .status(400)
-          .json({ success: false, error: "BAD_TEXT" })
+      const cd = await redis.get(COOLDOWN_KEY(name))
+      if (cd) {
+        return res.status(429).json({ success: false, error: "Cooldown" })
       }
 
-      const id = makeId()
-
-      const message = {
+      const id = msgIdGen()
+      const msg = {
         id,
-        username,
+        name,
         text,
         createdAt: Date.now(),
       }
 
       await redis.pipeline()
-        .set(CHAT_MSG_KEY(id), JSON.stringify(message), {
-          ex: MESSAGE_TTL,
-        })
-        .lpush(CHAT_LIST_KEY, id)
-        .ltrim(CHAT_LIST_KEY, 0, MAX_MESSAGES - 1)
+        .set(COOLDOWN_KEY(name), "1", { ex: COOLDOWN_SEC })
+        .set(MSG_KEY(id), JSON.stringify(msg), { ex: MESSAGE_TTL })
+        .lpush(FEED_KEY, id)
+        .ltrim(FEED_KEY, 0, DEFAULT_LIMIT - 1)
         .exec()
 
-      return res.json({
-        success: true,
-        message,
-        username, // returned so frontend can persist
-      })
+      return res.status(200).json({ success: true, message: msg })
     }
 
-    return res
-      .status(400)
-      .json({ success: false, error: "UNKNOWN_ACTION" })
+    return res.status(400).json({ success: false, error: "Unknown action" })
   } catch (err) {
-    console.error("CHAT API ERROR:", err)
-    return res
-      .status(500)
-      .json({ success: false, error: "SERVER_ERROR" })
+    console.error("standalone chat error:", err)
+    return res.status(500).json({ success: false, error: "Server error" })
   }
 }
