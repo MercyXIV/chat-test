@@ -5,16 +5,16 @@ const redis = new Redis({
   token: process.env.UPSTASH_REDIS_REST_TOKEN,
 })
 
-/* ---------------- Config ---------------- */
-const FEED_KEY = "chat_test_red_feed"
-const MSG_KEY = (id) => `chat_test_red_msg:${id}`
-const COOLDOWN_KEY = (u) => `chat_test_red_cd:${u}`
+/* ================= CONFIG ================= */
+const FEED_KEY = "global_chat_feed_v1"
+const MSG_KEY = (id) => `chat_msg:${id}`
+const USER_COOLDOWN = (u) => `chat_cd:${u}`
 
-const MAX_MESSAGE_LENGTH = 200
-const COOLDOWN_SECONDS = 5
-const MAX_MESSAGES = 60
+const MAX_LEN = 200
+const COOLDOWN_SEC = 5
+const MAX_MESSAGES = 80
 
-/* ---------------- Helpers ---------------- */
+/* ================= HELPERS ================= */
 const msgId = () =>
   `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
 
@@ -22,19 +22,19 @@ const normalize = (t) =>
   String(t || "").replace(/\s+/g, " ").trim()
 
 function avatarFromUsername(username) {
-  const colors = ["#88ff55", "#3498db", "#9b59b6", "#1abc9c"]
-  let hash = 0
+  const colors = ["#3fa9e9", "#4aa3df", "#5bb8f0"]
+  let h = 0
   for (let i = 0; i < username.length; i++) {
-    hash = (hash << 5) - hash + username.charCodeAt(i)
-    hash |= 0
+    h = (h << 5) - h + username.charCodeAt(i)
+    h |= 0
   }
   return {
     initials: username.slice(0, 2).toUpperCase(),
-    color: colors[Math.abs(hash) % colors.length],
+    color: colors[Math.abs(h) % colors.length],
   }
 }
 
-/* ---------------- Handler ---------------- */
+/* ================= HANDLER ================= */
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*")
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
@@ -47,7 +47,7 @@ export default async function handler(req, res) {
     const body = req.method === "POST" ? req.body || {} : req.query || {}
     const action = String(body.action || "")
 
-    /* ---------- LIST ---------- */
+    /* -------- LIST -------- */
     if (action === "list") {
       const ids = await redis.lrange(FEED_KEY, 0, MAX_MESSAGES - 1)
       if (!ids.length) {
@@ -78,17 +78,27 @@ export default async function handler(req, res) {
       return res.json({ success: true, messages })
     }
 
-    /* ---------- SEND ---------- */
+    /* -------- SEND -------- */
     if (action === "send") {
-      const username = String(body.username || "").trim()
+      const username = String(body.username || "").trim().toLowerCase()
       const text = normalize(body.text)
 
-      if (!username || !text || text.length > MAX_MESSAGE_LENGTH) {
-        return res.status(400).json({ success: false })
+      if (!username) {
+        return res
+          .status(400)
+          .json({ success: false, error: "NO_USERNAME" })
       }
 
-      if (await redis.get(COOLDOWN_KEY(username))) {
-        return res.status(429).json({ success: false, error: "COOLDOWN" })
+      if (!text || text.length > MAX_LEN) {
+        return res
+          .status(400)
+          .json({ success: false, error: "BAD_TEXT" })
+      }
+
+      if (await redis.get(USER_COOLDOWN(username))) {
+        return res
+          .status(429)
+          .json({ success: false, error: "COOLDOWN" })
       }
 
       const msg = {
@@ -102,16 +112,16 @@ export default async function handler(req, res) {
       await redis.pipeline()
         .set(MSG_KEY(msg.id), JSON.stringify(msg), { ex: 60 * 60 * 6 })
         .lpush(FEED_KEY, msg.id)
-        .ltrim(FEED_KEY, 0, 200)
-        .set(COOLDOWN_KEY(username), "1", { ex: COOLDOWN_SECONDS })
+        .ltrim(FEED_KEY, 0, 300)
+        .set(USER_COOLDOWN(username), "1", { ex: COOLDOWN_SEC })
         .exec()
 
       return res.json({ success: true, message: msg })
     }
 
-    return res.status(400).json({ success: false })
-  } catch (err) {
-    console.error("chat error:", err)
+    return res.status(400).json({ success: false, error: "BAD_ACTION" })
+  } catch (e) {
+    console.error("chat error:", e)
     return res.status(500).json({ success: false })
   }
 }
