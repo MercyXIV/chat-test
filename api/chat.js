@@ -53,6 +53,8 @@ const rand = (n = 6) =>
 
 const msgIdGen = () => `msg_${Date.now()}_${rand()}`
 
+const makeGuest = () => `guest-${rand(4)}`
+
 function isAdmin(req, body) {
   const pass = process.env.CHAT_ADMIN_PASSWORD
   return (
@@ -123,7 +125,7 @@ const SHADOWBAN_KEY = "chat_shadowban_v1"
 const LIST_LIMIT = 60
 const COOLDOWN_SEC = 5
 const EDIT_WINDOW_MS = 10 * 60 * 1000
-const MESSAGE_TTL = 60 * 60 * 6 // 6 hours
+const MESSAGE_TTL = 60 * 60 * 6
 
 /* ======================================================
    HANDLER
@@ -140,7 +142,7 @@ export default async function handler(req, res) {
 
     /* ================= LIST ================= */
     if (action === "list") {
-      const viewer = normName(body.name)
+      const viewer = normName(body.name) || makeGuest()
       const shadowed = admin
         ? {}
         : await redis.hgetall(SHADOWBAN_KEY)
@@ -184,10 +186,10 @@ export default async function handler(req, res) {
 
     /* ================= CREATE ================= */
     if (action === "create") {
-      const name = normName(body.name)
+      const name = normName(body.name) || makeGuest()
       const text = normText(body.text)
 
-      if (!name || !text) {
+      if (!text) {
         return res
           .status(400)
           .json({ success: false, error: "Invalid input" })
@@ -232,14 +234,14 @@ export default async function handler(req, res) {
         })
       }
 
-      return res.json({ success: true })
+      return res.json({ success: true, name })
     }
 
     /* ================= EDIT ================= */
     if (action === "edit") {
       const id = body.id
       const text = normText(body.text)
-      const name = normName(body.name)
+      const name = normName(body.name) || makeGuest()
 
       const raw = await redis.get(MSG_KEY(id))
       if (!raw) return res.json({ success: false })
@@ -264,7 +266,7 @@ export default async function handler(req, res) {
     /* ================= DELETE ================= */
     if (action === "delete") {
       const id = body.id
-      const name = normName(body.name)
+      const name = normName(body.name) || makeGuest()
 
       const raw = await redis.get(MSG_KEY(id))
       if (!raw) return res.json({ success: false })
@@ -302,4 +304,4 @@ export default async function handler(req, res) {
       .status(500)
       .json({ success: false, error: "Server error" })
   }
-}
+        }
