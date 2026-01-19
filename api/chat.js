@@ -1,4 +1,7 @@
 // api/chat.js — FINAL GLOBAL CHAT BACKEND (FULL FEATURE SET)
+export const config = {
+  runtime: "nodejs",
+}
 
 import { Redis } from "@upstash/redis"
 
