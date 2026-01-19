@@ -1,7 +1,6 @@
-// api/chat.js — FINAL GLOBAL CHAT BACKEND (FULL FEATURE SET)
-export const config = {
-  runtime: "nodejs",
-}
+// /api/chat.js — FULL FEATURE CHAT (STRICT LPUSH / LRANGE)
+
+export const config = { runtime: "nodejs" }
 
 import { Redis } from "@upstash/redis"
 
@@ -10,63 +9,19 @@ const redis = new Redis({
   token: process.env.UPSTASH_REDIS_REST_TOKEN,
 })
 
-/* ======================================================
-   CORS + NO CACHE
-====================================================== */
-function cors(req, res) {
-  const origin = req.headers.origin || ""
-  const allowed =
-    origin === "https://chatestred.framer.website/" ||
-    origin.endsWith(".framer.website") ||
-    origin.endsWith(".framer.app")
+/* ================= CONFIG ================= */
+const FEED_KEY = "chat_feed_v4"
+const LIST_LIMIT = 60
+const COOLDOWN_SEC = 5
+const EDIT_WINDOW_MS = 10 * 60 * 1000
 
-  if (allowed && origin) {
-    res.setHeader("Access-Control-Allow-Origin", origin)
-    res.setHeader("Vary", "Origin")
-  } else {
-    res.setHeader("Access-Control-Allow-Origin", "*")
-  }
+/* ================= HELPERS ================= */
+const norm = (s, n = 200) =>
+  String(s || "").replace(/\s+/g, " ").trim().slice(0, n)
 
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "Content-Type, X-Admin-Password"
-  )
-}
+const rand = () => Math.random().toString(36).slice(2, 8)
+const makeGuest = () => `guest-${rand()}`
 
-function noCache(res) {
-  res.setHeader(
-    "Cache-Control",
-    "no-store, no-cache, must-revalidate, max-age=0"
-  )
-}
-
-/* ======================================================
-   HELPERS
-====================================================== */
-const normName = (s) => String(s || "").trim().slice(0, 20)
-const normText = (s) =>
-  String(s || "").replace(/\s+/g, " ").trim().slice(0, 200)
-
-const rand = (n = 6) =>
-  [...Array(n)].map(() => Math.random().toString(36)[2]).join("")
-
-const msgIdGen = () => `msg_${Date.now()}_${rand()}`
-
-const makeGuest = () => `guest-${rand(4)}`
-
-function isAdmin(req, body) {
-  const pass = process.env.CHAT_ADMIN_PASSWORD
-  return (
-    pass &&
-    (req.headers["x-admin-password"] === pass ||
-      body.adminPassword === pass)
-  )
-}
-
-/* ======================================================
-   STATIC AVATAR
-====================================================== */
 function hashString(str) {
   let h = 0
   for (let i = 0; i < str.length; i++) {
@@ -88,151 +43,60 @@ const AVATAR_COLORS = [
 ]
 
 function avatarFromName(name) {
-  const hash = hashString(name.toLowerCase())
+  const h = hashString(name.toLowerCase())
   return {
-    color: AVATAR_COLORS[hash % AVATAR_COLORS.length],
+    color: AVATAR_COLORS[h % AVATAR_COLORS.length],
     initials: name.slice(0, 2).toUpperCase(),
   }
 }
 
-/* ======================================================
-   RANK SYSTEM
-====================================================== */
-const USER_MSG_COUNT_KEY = "chat_user_msg_count_v1"
-
-function getRank(count) {
-  if (count < 10) return { roman: "I", color: "#9aa3ad" }
-  if (count < 25) return { roman: "II", color: "#5fb739" }
-  if (count < 50) return { roman: "III", color: "#45aaf2" }
-  if (count < 100) return { roman: "IV", color: "#9b59b6" }
-  if (count < 200) return { roman: "V", color: "#f1c40f" }
-  if (count < 400) return { roman: "VI", color: "#e67e22" }
-  if (count < 800) return { roman: "VII", color: "#e74c3c" }
-  return { roman: "VIII", color: "#ff4757" }
-}
-
-/* ======================================================
-   REDIS KEYS
-====================================================== */
-const FEED_KEY = "chat_feed_v4"
-const MSG_KEY = (id) => `chat_msg:${id}`
-const COOLDOWN_KEY = (name) => `chat_cd:${name}`
-const SHADOWBAN_KEY = "chat_shadowban_v1"
-
-/* ======================================================
-   CONFIG
-====================================================== */
-const LIST_LIMIT = 60
-const COOLDOWN_SEC = 5
-const EDIT_WINDOW_MS = 10 * 60 * 1000
-const MESSAGE_TTL = 60 * 60 * 6
-
-/* ======================================================
-   HANDLER
-====================================================== */
+/* ================= HANDLER ================= */
 export default async function handler(req, res) {
-  cors(req, res)
-  noCache(res)
+  res.setHeader("Access-Control-Allow-Origin", "*")
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type")
+  res.setHeader("Cache-Control", "no-store")
+
   if (req.method === "OPTIONS") return res.status(200).end()
 
   try {
     const body = req.method === "POST" ? req.body : req.query
     const action = body.action
-    const admin = isAdmin(req, body)
 
     /* ================= LIST ================= */
     if (action === "list") {
-      const viewer = normName(body.name) || makeGuest()
-      const shadowed = admin
-        ? {}
-        : await redis.hgetall(SHADOWBAN_KEY)
-
-      const ids = await redis.lrange(FEED_KEY, 0, LIST_LIMIT - 1)
-      const messages = []
-
-      for (const id of ids) {
-        const raw = await redis.get(MSG_KEY(id))
-        if (!raw) continue
-
-        const msg = JSON.parse(raw)
-
-        if (
-          !admin &&
-          shadowed[msg.name] === "1" &&
-          msg.name !== viewer
-        ) {
-          continue
-        }
-
-        messages.push({
-          id: msg.id,
-          username: msg.name,
-          visibleText: msg.deleted
-            ? "[message deleted]"
-            : msg.text,
-          avatar: msg.avatar,
-          rank: msg.rank,
-          time: {
-            unix: msg.createdAt,
-            label: new Date(msg.createdAt).toLocaleString(),
-          },
-          deleted: msg.deleted,
-          isAdmin: msg.isAdmin,
+      const raw = await redis.lrange(FEED_KEY, 0, LIST_LIMIT - 1)
+      const messages = raw
+        .map((x) => {
+          try {
+            return JSON.parse(x)
+          } catch {
+            return null
+          }
         })
-      }
+        .filter(Boolean)
 
       return res.json({ success: true, messages })
     }
 
     /* ================= CREATE ================= */
     if (action === "create") {
-      const name = normName(body.name) || makeGuest()
-      const text = normText(body.text)
-
-      if (!text) {
-        return res
-          .status(400)
-          .json({ success: false, error: "Invalid input" })
-      }
-
-      if (!admin && (await redis.get(COOLDOWN_KEY(name)))) {
-        return res
-          .status(429)
-          .json({ success: false, error: "Slowmode" })
-      }
-
-      const count = await redis.hincrby(
-        USER_MSG_COUNT_KEY,
-        name,
-        1
-      )
-      const rank = getRank(count)
+      const name = norm(body.name, 20) || makeGuest()
+      const text = norm(body.text, 200)
+      if (!text) return res.json({ success: false })
 
       const msg = {
-        id: msgIdGen(),
+        id: Date.now() + "_" + rand(),
         name,
         text,
         createdAt: Date.now(),
         editedAt: null,
         deleted: false,
         avatar: avatarFromName(name),
-        rank,
-        isAdmin: admin,
       }
 
-      await redis.pipeline()
-        .set(MSG_KEY(msg.id), JSON.stringify(msg), {
-          ex: MESSAGE_TTL,
-        })
-        .lpush(FEED_KEY, msg.id)
-        .ltrim(FEED_KEY, 0, LIST_LIMIT - 1)
-        .exec()
-
-      if (!admin) {
-        await redis.set(COOLDOWN_KEY(name), "1", {
-          ex: COOLDOWN_SEC,
-        })
-      }
+      await redis.lpush(FEED_KEY, JSON.stringify(msg))
+      await redis.ltrim(FEED_KEY, 0, LIST_LIMIT - 1)
 
       return res.json({ success: true, name })
     }
@@ -240,18 +104,19 @@ export default async function handler(req, res) {
     /* ================= EDIT ================= */
     if (action === "edit") {
       const id = body.id
-      const text = normText(body.text)
-      const name = normName(body.name) || makeGuest()
+      const text = norm(body.text, 200)
+      const name = norm(body.name, 20)
 
-      const raw = await redis.get(MSG_KEY(id))
-      if (!raw) return res.json({ success: false })
+      const raw = await redis.lrange(FEED_KEY, 0, LIST_LIMIT - 1)
+      const list = raw.map((x) => JSON.parse(x))
 
-      const msg = JSON.parse(raw)
+      const idx = list.findIndex((m) => m.id === id)
+      if (idx === -1) return res.json({ success: false })
 
+      const msg = list[idx]
       if (
-        !admin &&
-        (msg.name !== name ||
-          Date.now() - msg.createdAt > EDIT_WINDOW_MS)
+        msg.name !== name ||
+        Date.now() - msg.createdAt > EDIT_WINDOW_MS
       ) {
         return res.status(403).end()
       }
@@ -259,49 +124,46 @@ export default async function handler(req, res) {
       msg.text = text
       msg.editedAt = Date.now()
 
-      await redis.set(MSG_KEY(id), JSON.stringify(msg))
+      list[idx] = msg
+      await redis.del(FEED_KEY)
+      await redis.lpush(
+        FEED_KEY,
+        ...list.reverse().map((m) => JSON.stringify(m))
+      )
+
       return res.json({ success: true })
     }
 
     /* ================= DELETE ================= */
     if (action === "delete") {
       const id = body.id
-      const name = normName(body.name) || makeGuest()
+      const name = norm(body.name, 20)
 
-      const raw = await redis.get(MSG_KEY(id))
-      if (!raw) return res.json({ success: false })
+      const raw = await redis.lrange(FEED_KEY, 0, LIST_LIMIT - 1)
+      const list = raw.map((x) => JSON.parse(x))
 
-      const msg = JSON.parse(raw)
+      const idx = list.findIndex((m) => m.id === id)
+      if (idx === -1) return res.json({ success: false })
 
-      if (!admin && msg.name !== name) {
-        return res.status(403).end()
-      }
+      const msg = list[idx]
+      if (msg.name !== name) return res.status(403).end()
 
       msg.deleted = true
       msg.text = ""
 
-      await redis.set(MSG_KEY(id), JSON.stringify(msg))
+      list[idx] = msg
+      await redis.del(FEED_KEY)
+      await redis.lpush(
+        FEED_KEY,
+        ...list.reverse().map((m) => JSON.stringify(m))
+      )
+
       return res.json({ success: true })
     }
 
-    /* ================= SHADOWBAN ================= */
-    if (action === "shadowban" && admin) {
-      await redis.hset(SHADOWBAN_KEY, body.target, "1")
-      return res.json({ success: true })
-    }
-
-    if (action === "unshadowban" && admin) {
-      await redis.hdel(SHADOWBAN_KEY, body.target)
-      return res.json({ success: true })
-    }
-
-    return res
-      .status(400)
-      .json({ success: false, error: "Unknown action" })
+    return res.json({ success: false })
   } catch (err) {
     console.error("CHAT ERROR:", err)
-    return res
-      .status(500)
-      .json({ success: false, error: "Server error" })
+    return res.status(500).json({ success: false })
   }
-        }
+  }
